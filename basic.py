@@ -8,9 +8,13 @@ import math
 import os
 
 from nltk.translate.bleu_score import corpus_bleu
-from nltk.translate.bleu_score import sentence_bleu
-import fr_core_news_sm
-import en_core_web_sm
+#import fr_core_news_sm
+#import en_core_web_sm
+import fr_core_news_lg
+import en_core_web_lg
+
+import wandb
+wandb.init(project="paral-project")
 
 
 class Transformer(nn.Module):
@@ -136,7 +140,7 @@ def train_func(model, iterator, optimizer, criterion):
     return epoch_loss / len(iterator)
 
 
-def inference(model, file_name, src_vocab, trg_vocab, attention = False, max_trg_len = 64):
+def inference(model, file_name, src_vocab, trg_vocab, attention = False, max_trg_len = 64, ep=0):
     '''
     Function for translation inference
 
@@ -199,11 +203,16 @@ def inference(model, file_name, src_vocab, trg_vocab, attention = False, max_trg
         all_translated_text.append([trg_vocab.vocab.itos[idx] for idx in all_translated_trg_tokids[i]])
         
     corpus_bleu_score = corpus_bleu(all_gold_text, all_translated_text)
+    
+    if ep == 0 or ep == N_EPOCHS-1:
+        print('Epoch', ep+1)
+        print('all_gold_text:\n', all_gold_text[0], '\n')
+        print('all_translated_text:\n', all_translated_text[0], '\n')
 
     return corpus_bleu_score
 
 
-def evaluate(model, iterator, criterion):
+def evaluate(model, iterator, criterion, ep=0):
     model.eval()
     epoch_loss = 0
     
@@ -225,63 +234,10 @@ def evaluate(model, iterator, criterion):
             epoch_loss += loss.item()
             #break
         
-    bleu = inference(model, "data/val_eng_fre.tsv", SRC, TRG, False, 64)
+    bleu = inference(model, "data/val_eng_fre.tsv", SRC, TRG, False, 64, ep)
 
     return epoch_loss / len(iterator) , bleu
 
-
-def check(model, file_name, src_vocab, trg_vocab, attention = False, max_trg_len = 64):
-    '''
-    Return translated sentences
-    '''
-    test = data.TabularDataset(
-      path=file_name, # the root directory where the data lies
-      format='tsv',
-      skip_header=True, # if your tsv file has a header, make sure to pass this to ensure it doesn't get proceesed as data!
-      fields=[('TRG', trg_vocab), ('SRC', src_vocab)])
-
-    test_iter = data.Iterator(
-      dataset = test, # we pass in the datasets we want the iterator to draw data from
-      sort = False, 
-      batch_size=1,
-      sort_key=None,
-      shuffle=False,
-      sort_within_batch=False,
-      device = device,
-      train=False
-    )
-  
-    model.eval()
-    all_gold_trg_tokids = []
-    all_translated_trg_tokids = []
-
-    with torch.no_grad():
-        for i, batch in enumerate(test_iter):
-            src = batch.SRC.to(device)
-            trg = batch.TRG.to(device)
-            batch_size = trg.shape[1]
-            outputs = [trg_vocab.vocab.stoi["<sos>"]]
-
-            for i in range(max_trg_len):
-                trg_tensor = torch.LongTensor(outputs).unsqueeze(1).to(device)
-                output = model(src, trg_tensor)
-                topv, topi = output[-1,0,:].topk(1)
-                cur_decoded_token = topi.squeeze().detach()  # detach from history as input
-                outputs.append(cur_decoded_token.item())
-
-                if cur_decoded_token.item() == trg_vocab.vocab.stoi["<eos>"]:
-                    break
-            all_translated_trg_tokids.append(outputs[1:-1])
-            all_gold_trg_tokids.append([trg[idx, 0].item() for idx in range(1, trg.size(0)-1)])
-    
-    # convert token ids to token strs
-    translated_text = []
-    gold_text = []
-    for i in range(len(all_gold_trg_tokids)): 
-        translated_text.append([trg_vocab.vocab.itos[idx] for idx in all_translated_trg_tokids[i]])
-        gold_text.append([[trg_vocab.vocab.itos[idx] for idx in all_gold_trg_tokids[i]]])
-
-    return translated_text, gold_text
 
 
 # set the pseudo-random generator
@@ -294,8 +250,9 @@ if n_gpu > 0:
     torch.cuda.manual_seed(manual_seed)
 
 
-spacy_fr = fr_core_news_sm.load()
-spacy_en = en_core_web_sm.load()
+spacy_fr = fr_core_news_lg.load() #fr_core_news_sm
+spacy_en = en_core_web_lg.load() #en_core_web_sm
+print(f"\n##### Data pipelines   'fr_core_news_lg' and 'en_core_web_lg' loaded.\n")
 
 SRC = data.Field(tokenize = tokenize_fr,
             # init_token = '<sos>', # since initial encoder hidden state is always set to zero, the network can figure out that the time step is 0 and this token is optional
@@ -322,22 +279,25 @@ SRC.build_vocab(train, min_freq=2)
 print(f"Unique tokens in source (fr) vocabulary: {len(SRC.vocab)}")
 print(f"Unique tokens in target (en) vocabulary: {len(TRG.vocab)}")
 
-train_iter, val_iter, test_iter = data.BucketIterator.splits(
-    (train, val, test), # we pass in the datasets we want the iterator to draw data from
-    batch_sizes=(16, 256, 256),device = device,
-    sort_key=lambda x: len(x.SRC), # the BucketIterator needs to be told what function it should use to group the data.
-    sort_within_batch=False)
-
 # hyperparameters
 src_vocab = len(SRC.vocab)
 trg_vocab = len(TRG.vocab)
-embed_dim = 512
+embed_dim = 2048 #512
 nhead = 4
 num_encoder_layers = 2
 dropout = 0.1 
 num_decoder_layers = 2
-dim_feedforward = 512
+dim_feedforward = 2048
 learning_rate = 1e-4
+BATCH = 64 # 32
+N_EPOCHS = 2 # 15
+
+train_iter, val_iter, test_iter = data.BucketIterator.splits(
+    (train, val, test), # we pass in the datasets we want the iterator to draw data from
+    batch_sizes=(BATCH, 256, 256), device = device,
+    sort_key=lambda x: len(x.SRC), # the BucketIterator needs to be told what function it should use to group the data.
+    sort_within_batch=False)
+
 
 # model instance
 model = Transformer(src_vocab, trg_vocab, embed_dim, nhead, num_encoder_layers, dropout, num_decoder_layers, dim_feedforward).to(device)
@@ -351,18 +311,40 @@ print('<pad> token index: ', TRG_PAD_IDX)
 ## we will ignore the pad token in true target set
 criterion = nn.CrossEntropyLoss(ignore_index = TRG_PAD_IDX)
 
-# numer of epochs (hyperparameter)
-N_EPOCHS = 2 # 15
 
 # initial best valid loss
 best_valid_loss = float('inf')
 
-print('Training started...')
+path = "best"
+path_2 = "checkpoints"
+
+if not os.path.exists(path):
+   os.makedirs(path)
+   print(f"The new directory '{path}' is created!")
+
+if not os.path.exists(path_2):
+   os.makedirs(path_2)
+   print(f"The new directory '{path_2}' is created!")
+
+print(f'\n##### Training started:\n')
+print('src_vocab', src_vocab)
+print('trg_vocab', trg_vocab)
+print('embed_dim', embed_dim)
+print('nhead', nhead)
+print('num_encoder_layers', num_encoder_layers)
+print('num_decoder_layers', num_decoder_layers)
+print('dropout', dropout)
+print('dim_feedforward', dim_feedforward)
+print('learning_rate', learning_rate)
+print('BATCH', BATCH)
+print('N_EPOCHS', N_EPOCHS)
+
+
 for epoch in range(N_EPOCHS):
     start_time = time.time()
     
     train_loss = train_func(model, train_iter, optimizer, criterion)
-    valid_loss, bleu = evaluate(model, val_iter, criterion)
+    valid_loss, bleu = evaluate(model, val_iter, criterion, epoch)
     
     end_time = time.time()
     epoch_mins, epoch_secs = epoch_time(start_time, end_time)
@@ -374,21 +356,23 @@ for epoch in range(N_EPOCHS):
         'state_dict': state_dict_model,
         'optimizer': optimizer.state_dict()
         }
-    torch.save(state, "checkpoints/seq2seq_"+str(epoch+1)+".pt")
-    # torch.save(state, "checkpoints/seq2seq_"+str(epoch+1)+".pt")
-
-    print(f'Epoch: {epoch+1:02} | Time: {epoch_mins}m {epoch_secs}s')
+    torch.save(state, "checkpoints/model_"+str(N_EPOCHS)+"ep_"+str(BATCH)+"b_"+str(epoch+1)+".pt")
+    if valid_loss < best_valid_loss:
+        best_valid_loss = valid_loss
+        torch.save(model.state_dict(), "best/model_"+str(N_EPOCHS)+"ep_"+str(BATCH)+"b.pth")
+        print(f"\nEpoch {epoch+1}\nbest_valid_loss:\n {best_valid_loss:.3f}\n")
+    
+    wandb.log({"valid_bleu": bleu, "train_loss": train_loss, "valid_loss": valid_loss, 'epoch_mins':epoch_mins, 'epoch_secs':epoch_secs})
+    print(f'Epoch: [{epoch+1}/{N_EPOCHS}] | Time: {epoch_mins}m {epoch_secs}s')
     print(f'\t Train Loss: {train_loss:.3f} | Train PPL: {math.exp(train_loss):7.3f}')
-    print(f'\t Val. Loss: {valid_loss:.3f} |  Val. PPL: {math.exp(valid_loss):7.3f}')
-    print(f'\t Val. BLEU: {bleu:7.3f}')
+    print(f'\t Val.  Loss: {valid_loss:.3f} |  Val. PPL: {math.exp(valid_loss):7.3f}')
+    print(f'\t Val. BLEU: {bleu:.3f}')
 
-# Evaluate the model after the last epoch on the test set
-test_loss, bleu_test = evaluate(model, test_iter, criterion)
-print(f'\t Test BLEU: {bleu_test:7.3f}')
 
-pred, gold = check(model, "data/test.tsv",
-                   SRC, TRG, False, 64)
+wandb.log({"best_valid_loss": best_valid_loss})
+wandb.finish()
+print("\nTon modèle est très bon!")
+print("Et tu intelligence est vraiment étonnante!")
+print("C'est la fin -_0")
 
-print('--------------\nCheck results:\n\n')
-for i in len(pred):
-    print(pred[i], "\t", gold[i])
+
