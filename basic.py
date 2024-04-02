@@ -290,7 +290,7 @@ num_decoder_layers = 2
 dim_feedforward = 2048
 learning_rate = 1e-4
 BATCH = 64 # 32
-N_EPOCHS = 2 # 15
+N_EPOCHS = 10
 
 train_iter, val_iter, test_iter = data.BucketIterator.splits(
     (train, val, test), # we pass in the datasets we want the iterator to draw data from
@@ -360,10 +360,9 @@ for epoch in range(N_EPOCHS):
     if valid_loss < best_valid_loss:
         best_valid_loss = valid_loss
         torch.save(model.state_dict(), "best/model_"+str(N_EPOCHS)+"ep_"+str(BATCH)+"b.pth")
-        print(f"\nEpoch {epoch+1}\nbest_valid_loss:\n {best_valid_loss:.3f}\n")
     
     wandb.log({"valid_bleu": bleu, "train_loss": train_loss, "valid_loss": valid_loss, 'epoch_mins':epoch_mins, 'epoch_secs':epoch_secs})
-    print(f'Epoch: [{epoch+1}/{N_EPOCHS}] | Time: {epoch_mins}m {epoch_secs}s')
+    print(f'\nEpoch: [{epoch+1}/{N_EPOCHS}] | Time: {epoch_mins}m {epoch_secs}s')
     print(f'\t Train Loss: {train_loss:.3f} | Train PPL: {math.exp(train_loss):7.3f}')
     print(f'\t Val.  Loss: {valid_loss:.3f} |  Val. PPL: {math.exp(valid_loss):7.3f}')
     print(f'\t Val. BLEU: {bleu:.3f}')
@@ -371,8 +370,7 @@ for epoch in range(N_EPOCHS):
 
 wandb.log({"best_valid_loss": best_valid_loss})
 wandb.finish()
-print("\nTon modèle est très bon!")
-print("Et tu intelligence est vraiment étonnante!")
-print("C'est la fin -_0")
 
+print("\nTon modèle est très bon!")
+print("C'est la fin -_0")
 
