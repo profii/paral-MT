@@ -303,7 +303,7 @@ train_iter, val_iter, test_iter = data.BucketIterator.splits(
 model = Transformer(src_vocab, trg_vocab, embed_dim, nhead, num_encoder_layers, dropout, num_decoder_layers, dim_feedforward).to(device)
 
 # set the optimizer
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
 # create the loss function
 TRG_PAD_IDX = TRG.vocab.stoi[TRG.pad_token]
