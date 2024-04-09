@@ -96,7 +96,8 @@ def epoch_time(start_time, end_time):
 def train_func(model, iterator):
     model.train()
     epoch_loss = 0
-#     print(f'#{local_rank} - I am ready to train!')
+    se = []
+    start_time = time.time()
     
     for i, batch in enumerate(iterator):
         src = batch.SRC.to(device)
@@ -107,8 +108,15 @@ def train_func(model, iterator):
         model.step()
 
         epoch_loss += loss.mean().item()
-
-    return epoch_loss / len(iterator)
+        se.append(loss.mean().item())
+    
+    end_time = time.time()
+    elapsed_time = end_time - start_time
+    throughput = len(iterator) / elapsed_time  # Throughput calculation
+    se = torch.std(torch.tensor(se)) / math.sqrt(len(iterator))
+    se = se.item()
+    
+    return epoch_loss / len(iterator), throughput, se
 
 
 def inference_func(model, file_name, max_trg_len = 64, ep=0):
@@ -248,7 +256,7 @@ num_decoder_layers = 2
 dim_feedforward = 2048
 learning_rate = 1e-4
 BATCH = 64 # 64
-N_EPOCHS = 2 # 10
+N_EPOCHS = 10 # 10
 TRG_PAD_IDX = TRG.vocab.stoi[TRG.pad_token]
 print('TRG_PAD_IDX', TRG_PAD_IDX)
 
@@ -315,14 +323,14 @@ wandb.run.name = "Paral_"+str(BATCH)+"b_"+str(N_EPOCHS)+"ep_AdamW_"+str(local_ra
 for epoch in range(N_EPOCHS):
     start_time = time.time()
     
-    train_loss = train_func(model, train_iter)
+    train_loss, throughput, se = train_func(model, train_iter)
     valid_loss, bleu = evaluate(model, val_iter, epoch)
     end_time = time.time()
     epoch_mins, epoch_secs = epoch_time(start_time, end_time)
     
     
 #     torch.cuda.empty_cache()
-    wandb.log({"valid_bleu": bleu, "train_loss": train_loss, "valid_loss": valid_loss, 'epoch_mins':epoch_mins, 'epoch_secs':epoch_secs})
+    wandb.log({"valid_bleu": bleu, "train_loss": train_loss, "valid_loss": valid_loss, 'epoch_mins':epoch_mins, 'epoch_secs':epoch_secs, "throughput": throughput, "se": se})
     print(f'Epoch: [{epoch+1}/{N_EPOCHS}] | Time: {epoch_mins}m {epoch_secs}s')
     print(f'\t Train Loss: {train_loss:.3f} | Train PPL: {math.exp(train_loss):7.3f}')
     print(f'\t Val.  Loss: {valid_loss:.3f} |  Val. PPL: {math.exp(valid_loss):7.3f}')
