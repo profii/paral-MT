@@ -247,7 +247,7 @@ dropout = 0.1
 num_decoder_layers = 2
 dim_feedforward = 2048
 learning_rate = 1e-4
-BATCH = 4 # 64
+BATCH = 64 # 64
 N_EPOCHS = 2 # 10
 TRG_PAD_IDX = TRG.vocab.stoi[TRG.pad_token]
 print('TRG_PAD_IDX', TRG_PAD_IDX)
