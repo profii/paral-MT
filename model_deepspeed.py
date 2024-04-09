@@ -296,7 +296,6 @@ model, _, _, _ = deepspeed.initialize(model=model,
                                       model_parameters=model.parameters(),
                                       config=config)
 
-
 print(f'\n##### Training started:\n')
 print('src_vocab', src_vocab)
 print('trg_vocab', trg_vocab)
@@ -311,6 +310,7 @@ print('BATCH', BATCH)
 print('N_EPOCHS', N_EPOCHS)
 
 print(f"#{local_rank}: Start training...\n")
+wandb.run.name = "Paral_"+str(BATCH)+"b_"+str(N_EPOCHS)+"ep_AdamW_"+str(local_rank)
 
 for epoch in range(N_EPOCHS):
     start_time = time.time()
@@ -321,7 +321,7 @@ for epoch in range(N_EPOCHS):
     epoch_mins, epoch_secs = epoch_time(start_time, end_time)
     
     
-    # torch.cuda.empty_cache()
+#     torch.cuda.empty_cache()
     wandb.log({"valid_bleu": bleu, "train_loss": train_loss, "valid_loss": valid_loss, 'epoch_mins':epoch_mins, 'epoch_secs':epoch_secs})
     print(f'Epoch: [{epoch+1}/{N_EPOCHS}] | Time: {epoch_mins}m {epoch_secs}s')
     print(f'\t Train Loss: {train_loss:.3f} | Train PPL: {math.exp(train_loss):7.3f}')
@@ -331,6 +331,7 @@ for epoch in range(N_EPOCHS):
 
 bleu = inference_func(model, "data/test_eng_fre.tsv", 64, 1)
 print(f'\t Test BLEU: {bleu:.3f}')
+wandb.log({"test_bleu": bleu})
 wandb.finish()
 print("\nTon modèle est très bon!")
 print("C'est la fin -_0")
