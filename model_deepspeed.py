@@ -1,5 +1,5 @@
-# deepspeed --num_nodes=2 --deepspeed
-
+# deepspeed --num_nodes=2 --deepspeed --include localhost:0,1 model_deepspeed.py
+# deepspeed --num_gpus=2 model_deepspeed.py
 # you can use only GPUs 0 and 1:
 # deepspeed --include localhost:0,1
 
@@ -22,6 +22,9 @@ wandb.init(project="paral-project")
 
 local_rank = int(os.getenv("LOCAL_RANK", "0"))
 print('local_rank:', local_rank)
+device = (torch.device(get_accelerator().device_name(), local_rank) if (local_rank > -1)
+              and get_accelerator().is_available() else torch.device("cpu"))
+print(device)
 
 
 class Transformer(nn.Module):
@@ -90,33 +93,25 @@ def epoch_time(start_time, end_time):
     return elapsed_mins, elapsed_secs
 
 
-def train_func(config, iterator, local_rank = -1):
-    device = (torch.device(get_accelerator().device_name(), local_rank) if (local_rank > -1)
-              and get_accelerator().is_available() else torch.device("cpu"))
-    
-    model = Transformer(src_vocab, trg_vocab, embed_dim, nhead, num_encoder_layers, dropout, num_decoder_layers, dim_feedforward).to(device)
-    # Initialize DeepSpeed
-    model, _, _, _ = deepspeed.initialize(model, model_parameters=model.parameters(), **config)
-    
-    print(f"\nDevice #{device}:")
-
+def train_func(model, iterator):
     model.train()
     epoch_loss = 0
+#     print(f'#{local_rank} - I am ready to train!')
     
     for i, batch in enumerate(iterator):
-        
         src = batch.SRC.to(device)
         trg = batch.TRG.to(device)
+        
         loss = model(src, trg[:-1, :])
-        model.backward(loss)
+        model.backward(loss.mean())
         model.step()
 
-        epoch_loss += loss.item()
+        epoch_loss += loss.mean().item()
 
     return epoch_loss / len(iterator)
 
 
-def inference(model, file_name, src_vocab, trg_vocab, max_trg_len = 64, ep=0):
+def inference_func(model, file_name, max_trg_len = 64, ep=0):
     '''
     Function for translation inference
 
@@ -134,7 +129,7 @@ def inference(model, file_name, src_vocab, trg_vocab, max_trg_len = 64, ep=0):
       path=file_name, # the root directory where the data lies
       format='tsv',
       skip_header=True, # if your tsv file has a header, make sure to pass this to ensure it doesn't get proceesed as data!
-      fields=[('TRG', trg_vocab), ('SRC', src_vocab)])
+      fields=[('TRG', TRG), ('SRC', SRC)])
 
     test_iter = data.Iterator(
       dataset = test, # we pass in the datasets we want the iterator to draw data from
@@ -155,31 +150,26 @@ def inference(model, file_name, src_vocab, trg_vocab, max_trg_len = 64, ep=0):
             src = batch.SRC.to(device)
             trg = batch.TRG.to(device)
 
-            outputs = [trg_vocab.vocab.stoi["<sos>"]]
+            outputs = [TRG.vocab.stoi["<sos>"]]
             for i in range(max_trg_len):
                 trg_tensor = torch.LongTensor(outputs).unsqueeze(1).to(device)
                 output = model(src, trg_tensor)
-                output = output.last_hidden_state
                 output = torch.softmax(output, dim=-1)
-
-                # _, topi = output[:, -1, :].topk(1, dim=-1)
-                # cur_decoded_token = topi.squeeze().tolist()
-
                 topv, topi = output[-1,0,:].topk(1)
                 cur_decoded_token = topi.squeeze().detach()  # detach from history as input
                 outputs.append(cur_decoded_token.item())
 
-                if cur_decoded_token.item() == trg_vocab.vocab.stoi["<eos>"]:
+                if cur_decoded_token.item() == TRG.vocab.stoi["<eos>"]:
                     break
             all_translated_trg_tokids.append(outputs[1:-1])
-            all_gold_trg_tokids.append([ trg[idx, 0].item() for idx in range(1, trg.size(0)-1)])
+            all_gold_trg_tokids.append([trg[idx, 0].item() for idx in range(1, trg.size(0)-1)])
     
     # convert token ids to token strs
     all_gold_text = []
     all_translated_text = []
     for i in range(len(all_gold_trg_tokids)): 
-        all_gold_text.append([[trg_vocab.vocab.itos[idx] for idx in all_gold_trg_tokids[i]]])
-        all_translated_text.append([trg_vocab.vocab.itos[idx] for idx in all_translated_trg_tokids[i]])
+        all_gold_text.append([[TRG.vocab.itos[idx] for idx in all_gold_trg_tokids[i]]])
+        all_translated_text.append([TRG.vocab.itos[idx] for idx in all_translated_trg_tokids[i]])
         
     corpus_bleu_score = corpus_bleu(all_gold_text, all_translated_text)
     
@@ -190,29 +180,21 @@ def inference(model, file_name, src_vocab, trg_vocab, max_trg_len = 64, ep=0):
     return corpus_bleu_score
 
 
-def evaluate(config, iterator, local_rank = -1, ep=0):
-    device = (torch.device(get_accelerator().device_name(), local_rank) if (local_rank > -1)
-              and get_accelerator().is_available() else torch.device("cpu"))
-    
-    model = Transformer(src_vocab, trg_vocab, embed_dim, nhead, num_encoder_layers, dropout, num_decoder_layers, dim_feedforward).to(device)
-    # Initialize DeepSpeed
-    model, _, _, _ = deepspeed.initialize(model, model_parameters=model.parameters(), **config)
-    
-    print(f"\nDevice #{device}:")
-    # torch.cuda.empty_cache()
-
+def evaluate(model, iterator, ep=0):
     model.eval()
     epoch_loss = 0
+    
+#     print(f'#{local_rank} - I am ready to eval!')
     
     with torch.no_grad():
         for i, batch in enumerate(iterator):
             src = batch.SRC.to(device)
             trg = batch.TRG.to(device)
             loss = model(src, trg[:-1, :])
-            epoch_loss += loss.item()
+            epoch_loss += loss.mean().item()
         
-    bleu = inference(model, "data/val_eng_fre.tsv", SRC, TRG, False, 64, ep)
-
+    bleu = inference_func(model, "data/val_eng_fre.tsv", 64, ep)
+    
     return epoch_loss / len(iterator) , bleu
 
 
@@ -220,8 +202,6 @@ def evaluate(config, iterator, local_rank = -1, ep=0):
 # set the pseudo-random generator
 manual_seed = 77
 torch.manual_seed(manual_seed)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
 n_gpu = torch.cuda.device_count()
 print('n_gpu:', n_gpu)
 if n_gpu > 0:
@@ -245,17 +225,17 @@ train, val, test = data.TabularDataset.splits(
     path='data/', train='train_eng_fre.tsv',validation='val_eng_fre.tsv', test='test_eng_fre.tsv',
     format='tsv', skip_header=True, fields=[('TRG', TRG), ('SRC', SRC)])
 
-print(f"Number of training examples: {len(train.examples)}")
-print(f"Number of validation examples: {len(val.examples)}")
-print(f"Number of testing examples: {len(test.examples)}")
+# print(f"Number of training examples: {len(train.examples)}")
+# print(f"Number of validation examples: {len(val.examples)}")
+# print(f"Number of testing examples: {len(test.examples)}")
 
 # print(vars(train.examples[0]))
 
 TRG.build_vocab(train, min_freq=2)
 SRC.build_vocab(train, min_freq=2)
 
-print(f"Unique tokens in source (fr) vocabulary: {len(SRC.vocab)}")
-print(f"Unique tokens in target (en) vocabulary: {len(TRG.vocab)}")
+# print(f"Unique tokens in source (fr) vocabulary: {len(SRC.vocab)}")
+# print(f"Unique tokens in target (en) vocabulary: {len(TRG.vocab)}")
 
 # hyperparameters
 src_vocab = len(SRC.vocab)
@@ -267,8 +247,10 @@ dropout = 0.1
 num_decoder_layers = 2
 dim_feedforward = 2048
 learning_rate = 1e-4
-BATCH = 64 # 32
-N_EPOCHS = 2 # 15
+BATCH = 4 # 64
+N_EPOCHS = 2 # 10
+TRG_PAD_IDX = TRG.vocab.stoi[TRG.pad_token]
+print('TRG_PAD_IDX', TRG_PAD_IDX)
 
 train_iter, val_iter, test_iter = data.BucketIterator.splits(
     (train, val, test), # we pass in the datasets we want the iterator to draw data from
@@ -278,6 +260,7 @@ train_iter, val_iter, test_iter = data.BucketIterator.splits(
 
 # DeepSpeed configuration
 config = {
+#     "train_micro_batch_size_per_gpu": BATCH,
     "train_batch_size": BATCH,
     "gradient_accumulation_steps": 1,
     "optimizer": {
@@ -286,6 +269,7 @@ config = {
             "lr": learning_rate
         }
     },
+    "steps_per_print":1000,
     "fp16": {
         "enabled": True
     },
@@ -293,7 +277,8 @@ config = {
         "stage": 2,
         "allgather_partitions": True,
         "allgather_bucket_size": 2e8,
-        "overlap_comm": True
+        "overlap_comm": True,
+        "contiguous_gradients": True
     },
     "scheduler": {
         "type": "WarmupLR",
@@ -304,6 +289,13 @@ config = {
         }
     }
 }
+
+model = Transformer(src_vocab, trg_vocab, embed_dim, nhead, num_encoder_layers, dropout, num_decoder_layers, dim_feedforward).to(device)
+# Initialize DeepSpeed
+model, _, _, _ = deepspeed.initialize(model=model,
+                                      model_parameters=model.parameters(),
+                                      config=config)
+
 
 print(f'\n##### Training started:\n')
 print('src_vocab', src_vocab)
@@ -318,16 +310,18 @@ print('learning_rate', learning_rate)
 print('BATCH', BATCH)
 print('N_EPOCHS', N_EPOCHS)
 
+print(f"#{local_rank}: Start training...\n")
 
 for epoch in range(N_EPOCHS):
     start_time = time.time()
     
-    train_loss = train_func(config, train_iter, local_rank)
-    valid_loss, bleu = evaluate(config, val_iter, local_rank, epoch)
+    train_loss = train_func(model, train_iter)
+    valid_loss, bleu = evaluate(model, val_iter, epoch)
     end_time = time.time()
     epoch_mins, epoch_secs = epoch_time(start_time, end_time)
     
     
+    # torch.cuda.empty_cache()
     wandb.log({"valid_bleu": bleu, "train_loss": train_loss, "valid_loss": valid_loss, 'epoch_mins':epoch_mins, 'epoch_secs':epoch_secs})
     print(f'Epoch: [{epoch+1}/{N_EPOCHS}] | Time: {epoch_mins}m {epoch_secs}s')
     print(f'\t Train Loss: {train_loss:.3f} | Train PPL: {math.exp(train_loss):7.3f}')
@@ -335,6 +329,8 @@ for epoch in range(N_EPOCHS):
     print(f'\t Val. BLEU: {bleu:.3f}')
 
 
+bleu = inference_func(model, "data/test_eng_fre.tsv", 64, 1)
+print(f'\t Test BLEU: {bleu:.3f}')
 wandb.finish()
 print("\nTon modèle est très bon!")
 print("C'est la fin -_0")
