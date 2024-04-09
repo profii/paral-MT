@@ -1,5 +1,5 @@
 # Parallel Machine Translation using Transformer
-# # French to English
+**French to English**
 
 Number of training examples: **29000**;
 Number of validation examples: **1014**;
