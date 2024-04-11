@@ -29,6 +29,6 @@ Hyperparameters for ```basic.py```:
 | dropout | `0.1` |
 | dim_feedforward | `2048` |
 | learning_rate | `1e-4` |
-| BATCH | `4` |
+| BATCH | `64` |
 | N_EPOCHS | `10` |
 
