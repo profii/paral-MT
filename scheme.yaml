@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: basic-pod
+spec:
+  restartPolicy: Never
+  containers:
+    - name: cuda-container
+      image: 'pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel'
+      workingDir: /data
+      command: ["sh", "run.sh"]
+      resources:
+        limits:
+          nvidia.com/gpu: 1
+      volumeMounts:
+        - mountPath: /data
+          name: volume
+  volumes:
+    - name: volume
+      hostPath:
+        path: /home/anastasiia/project/ # Change this to absolute path
+
